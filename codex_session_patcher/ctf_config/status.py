@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from typing import Optional
 
 
+GLOBAL_MARKER = '# __csp_ctf_global__'
+
+
 @dataclass
 class CTFStatus:
     """CTF 配置状态"""
@@ -15,6 +18,7 @@ class CTFStatus:
     config_exists: bool = False
     prompt_exists: bool = False
     profile_available: bool = False
+    global_installed: bool = False
     config_path: Optional[str] = None
     prompt_path: Optional[str] = None
 
@@ -41,12 +45,13 @@ def check_ctf_status() -> CTFStatus:
     if os.path.exists(config_path):
         status.config_exists = True
 
-        # 检查是否包含 CTF 配置
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
                 content = f.read()
                 if '[profiles.ctf]' in content:
                     status.profile_available = True
+                if GLOBAL_MARKER in content:
+                    status.global_installed = True
         except Exception:
             pass
 

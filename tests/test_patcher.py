@@ -46,22 +46,42 @@ def config(temp_dir):
 
 
 @pytest.fixture
-def sample_session():
-    """创建示例会话数据"""
-    return {
-        "session_id": "test-session-123",
-        "messages": [
-            {
-                "role": "user",
-                "content": "请帮我写一个逆向分析脚本"
-            },
-            {
+def sample_jsonl_session():
+    """创建示例 JSONL 会话数据（Codex 格式）"""
+    return [
+        {"type": "user_message", "content": "请帮我写一个逆向分析脚本"},
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
                 "role": "assistant",
-                "content": "抱歉，我无法帮助您进行逆向分析，这可能违反相关政策。",
-                "reasoning": "用户请求可能涉及逆向工程，我需要拒绝这个请求"
+                "content": [
+                    {"type": "output_text", "text": "抱歉，我无法帮助您进行逆向分析，这可能违反相关政策。"}
+                ]
             }
-        ]
-    }
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "reasoning",
+                "content": "用户请求可能涉及逆向工程，我需要拒绝这个请求"
+            }
+        }
+    ]
+
+
+@pytest.fixture
+def sample_jsonl_file(temp_dir, sample_jsonl_session):
+    """创建示例 JSONL 会话文件"""
+    session_dir = os.path.join(temp_dir, "sessions")
+    os.makedirs(session_dir, exist_ok=True)
+    session_path = os.path.join(session_dir, "rollout-2026-03-25T16-05-56-abc12345.jsonl")
+
+    with open(session_path, 'w', encoding='utf-8') as f:
+        for item in sample_jsonl_session:
+            f.write(json.dumps(item, ensure_ascii=False) + '\n')
+
+    return session_path
 
 
 # =============================================================================
@@ -171,25 +191,6 @@ class TestBackupManager:
 class TestSessionParser:
     """会话解析器测试"""
 
-    def test_find_latest_session(self, config, sample_session):
-        """测试查找最新会话"""
-        # 创建会话目录和文件
-        os.makedirs(config.session_dir, exist_ok=True)
-
-        # 创建多个会话文件，模拟不同修改时间
-        for i, name in enumerate(["old.json", "new.json", "newest.json"]):
-            path = os.path.join(config.session_dir, name)
-            with open(path, 'w') as f:
-                json.dump(sample_session, f)
-            # 设置不同的修改时间
-            import time
-            os.utime(path, (time.time() + i, time.time() + i))
-
-        parser = SessionParser(config, RefusalDetector())
-        latest = parser.find_latest_session()
-
-        assert latest.endswith("newest.json")
-
     def test_session_not_found(self, config):
         """测试会话不存在"""
         parser = SessionParser(config, RefusalDetector())
@@ -197,42 +198,59 @@ class TestSessionParser:
         with pytest.raises(SessionNotFoundError):
             parser.find_latest_session()
 
-    def test_parse_session(self, config, sample_session):
-        """测试解析会话"""
-        os.makedirs(config.session_dir, exist_ok=True)
-        session_path = os.path.join(config.session_dir, "test.json")
-
-        with open(session_path, 'w') as f:
-            json.dump(sample_session, f)
-
+    def test_parse_jsonl_session(self, config, sample_jsonl_file):
+        """测试解析 JSONL 会话"""
         parser = SessionParser(config, RefusalDetector())
-        data = parser.parse_session(session_path)
+        lines = parser.parse_session_jsonl(sample_jsonl_file)
 
-        assert data == sample_session
+        assert len(lines) == 3
+        assert lines[0]["type"] == "user_message"
+        assert lines[1]["type"] == "response_item"
+        assert lines[2]["type"] == "response_item"
+        assert lines[2]["payload"]["type"] == "reasoning"
 
-    def test_clean_session_with_refusal(self, config, sample_session):
-        """测试清洗包含拒绝的会话"""
+    def test_clean_jsonl_with_refusal(self, config, sample_jsonl_file):
+        """测试清洗包含拒绝的 JSONL 会话"""
         parser = SessionParser(config, RefusalDetector())
-        cleaned, modified = parser.clean_session(sample_session)
+        lines = parser.parse_session_jsonl(sample_jsonl_file)
+
+        cleaned, modified, changes = parser.clean_session_jsonl(lines, show_content=True)
 
         assert modified is True
-        assert "抱歉" not in cleaned["messages"][1]["content"]
-        assert "reasoning" not in cleaned["messages"][1]
+        assert len(changes) >= 1  # 至少有一个替换
+        # 检查拒绝内容被替换
+        assistant_msg = cleaned[1]
+        text = parser.extract_text_content(assistant_msg)
+        assert "抱歉" not in text
 
-    def test_clean_session_without_refusal(self, config):
-        """测试清洗不包含拒绝的会话"""
-        session = {
-            "messages": [
-                {"role": "user", "content": "问题"},
-                {"role": "assistant", "content": "好的，这是回答"}
-            ]
-        }
+    def test_clean_jsonl_without_refusal(self, config, temp_dir):
+        """测试清洗不包含拒绝的 JSONL 会话"""
+        session_dir = os.path.join(temp_dir, "sessions")
+        os.makedirs(session_dir, exist_ok=True)
+        session_path = os.path.join(session_dir, "test.jsonl")
+
+        # 创建没有拒绝内容的 JSONL
+        lines = [
+            {"type": "user_message", "content": "问题"},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "好的，这是回答"}]
+                }
+            }
+        ]
+        with open(session_path, 'w', encoding='utf-8') as f:
+            for item in lines:
+                f.write(json.dumps(item, ensure_ascii=False) + '\n')
 
         parser = SessionParser(config, RefusalDetector())
-        cleaned, modified = parser.clean_session(session)
+        parsed = parser.parse_session_jsonl(session_path)
+        cleaned, modified, changes = parser.clean_session_jsonl(parsed)
 
         assert modified is False
-        assert cleaned == session
+        assert len(changes) == 0
 
 
 # =============================================================================
@@ -287,7 +305,7 @@ class TestMemoryParser:
 class TestIntegration:
     """集成测试"""
 
-    def test_full_workflow(self, config, sample_session):
+    def test_full_workflow(self, config, sample_jsonl_session):
         """测试完整工作流程"""
         from codex_patcher import SessionPatcher
 
@@ -295,9 +313,11 @@ class TestIntegration:
         os.makedirs(config.session_dir, exist_ok=True)
         os.makedirs(os.path.dirname(config.memory_file), exist_ok=True)
 
-        session_path = os.path.join(config.session_dir, "test.json")
-        with open(session_path, 'w') as f:
-            json.dump(sample_session, f)
+        # 创建 JSONL 格式的会话文件
+        session_path = os.path.join(config.session_dir, "rollout-2026-03-25T16-05-56-test123.jsonl")
+        with open(session_path, 'w', encoding='utf-8') as f:
+            for item in sample_jsonl_session:
+                f.write(json.dumps(item, ensure_ascii=False) + '\n')
 
         memory_content = "# 记忆\n\n抱歉，我无法帮助。\n"
         with open(config.memory_file, 'w') as f:
@@ -311,10 +331,19 @@ class TestIntegration:
         assert success is True
 
         # 验证会话已修改
-        with open(session_path, 'r') as f:
-            cleaned_session = json.load(f)
+        with open(session_path, 'r', encoding='utf-8') as f:
+            lines = [json.loads(line) for line in f if line.strip()]
 
-        assert "抱歉" not in cleaned_session["messages"][1]["content"]
+        # 找到助手消息
+        for line in lines:
+            if line.get('type') == 'response_item':
+                payload = line.get('payload', {})
+                if payload.get('type') == 'message' and payload.get('role') == 'assistant':
+                    content = payload.get('content', [])
+                    if isinstance(content, list):
+                        for item in content:
+                            if item.get('type') == 'output_text':
+                                assert "抱歉" not in item.get('text', '')
 
         # 验证记忆已清理
         with open(config.memory_file, 'r') as f:

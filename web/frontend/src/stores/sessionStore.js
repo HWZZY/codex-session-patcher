@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import * as api from '../services/api'
+import { useSettingsStore } from './settingsStore'
 
 export const useSessionStore = defineStore('session', () => {
   const sessions = ref([])
@@ -10,17 +11,35 @@ export const useSessionStore = defineStore('session', () => {
   const previewLoading = ref(false)
   const aiRewrite = ref(null)
   const aiRewriteLoading = ref(false)
-  const activeFormat = ref('auto') // 'auto' | 'codex' | 'claude_code'
+  const activeTab = ref('claude_code') // 'codex' | 'claude_code'
+
+  // 按格式拆分
+  const codexSessions = computed(() => sessions.value.filter(s => s.format === 'codex'))
+  const claudeSessions = computed(() => sessions.value.filter(s => s.format === 'claude_code'))
+
+  // 当前 Tab 的会话
+  const activeTabSessions = computed(() =>
+    activeTab.value === 'codex' ? codexSessions.value : claudeSessions.value
+  )
 
   async function fetchSessions(checkRefusal = true) {
     loading.value = true
     try {
-      const data = await api.getSessions(!checkRefusal, activeFormat.value)
+      // 固定拉取全部格式，客户端按 format 字段拆分
+      const data = await api.getSessions(!checkRefusal, 'auto')
       sessions.value = data.sessions
 
-      // 自动选中最新会话
-      if (sessions.value.length > 0 && !selectedId.value) {
-        await selectSession(sessions.value[0].id)
+      // 初始自动选中有数据的 Tab
+      const settingsStore = useSettingsStore()
+      if (settingsStore.claudeCodeEnabled && claudeSessions.value.length > 0) {
+        activeTab.value = 'claude_code'
+      } else {
+        activeTab.value = 'codex'
+      }
+
+      // 自动选中当前 Tab 的第一条会话
+      if (!selectedId.value && activeTabSessions.value.length > 0) {
+        await selectSession(activeTabSessions.value[0].id)
       }
     } catch (error) {
       console.error('Failed to fetch sessions:', error)
@@ -29,12 +48,15 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  function setFormat(format) {
-    activeFormat.value = format
-    selectedId.value = null
-    preview.value = null
-    aiRewrite.value = null
-    fetchSessions()
+  function setActiveTab(tab) {
+    activeTab.value = tab
+    // Tab 切换时重置预览，但不重新请求 API
+    const stillExists = activeTabSessions.value.find(s => s.id === selectedId.value)
+    if (!stillExists) {
+      selectedId.value = null
+      preview.value = null
+      aiRewrite.value = null
+    }
   }
 
   async function selectSession(id) {
@@ -44,14 +66,6 @@ export const useSessionStore = defineStore('session', () => {
 
     previewLoading.value = true
     try {
-      // 先获取会话详情（检测拒绝）
-      const sessionDetail = await api.getSession(id, true)
-      const idx = sessions.value.findIndex(s => s.id === id)
-      if (idx >= 0) {
-        sessions.value[idx] = sessionDetail
-      }
-
-      // 然后预览
       const data = await api.previewSession(id)
       preview.value = data
     } catch (error) {
@@ -154,9 +168,12 @@ export const useSessionStore = defineStore('session', () => {
     previewLoading,
     aiRewrite,
     aiRewriteLoading,
-    activeFormat,
+    activeTab,
+    codexSessions,
+    claudeSessions,
+    activeTabSessions,
     fetchSessions,
-    setFormat,
+    setActiveTab,
     selectSession,
     previewSession,
     requestAIRewrite,

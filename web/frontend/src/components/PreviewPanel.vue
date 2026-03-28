@@ -34,33 +34,52 @@
 
       <!-- 修改预览 Tab -->
       <div v-show="activeTab === 'changes'" class="preview-scrollbar">
-        <!-- 无拒绝回复但有推理/thinking内容 -->
-        <div v-if="!preview.has_changes && (preview.reasoning_count > 0 || preview.thinking_count > 0)" class="empty-content">
-          <n-empty type="info">
-            <template #icon>
-              <n-icon size="48" color="#2080f0">
-                <InformationCircleOutline />
-              </n-icon>
-            </template>
-            <template #description>
-              <div class="reasoning-info">
-                <p>当前会话无拒绝回复</p>
-                <p v-if="preview.reasoning_count > 0">执行清理时将删除 <strong>{{ preview.reasoning_count }}</strong> 条推理内容</p>
-                <p v-if="preview.thinking_count > 0">执行清理时将移除 <strong>{{ preview.thinking_count }}</strong> 个 Thinking Block</p>
-              </div>
-            </template>
-          </n-empty>
-        </div>
+        <!-- 无拒绝内容时显示对话摘要 -->
+        <div v-if="!preview.changes || preview.changes.length === 0" class="no-refusal-content">
+          <!-- 状态提示 -->
+          <div class="status-banner success-banner" v-if="!preview.has_changes">
+            <n-icon color="#18a058"><CheckmarkCircleOutline /></n-icon>
+            <span>当前会话无拒绝内容</span>
+          </div>
+          <div class="status-banner info-banner" v-if="preview.reasoning_count > 0">
+            <n-icon color="#2080f0"><InformationCircleOutline /></n-icon>
+            <span>执行清理时将删除 <strong>{{ preview.reasoning_count }}</strong> 条推理内容</span>
+          </div>
+          <div class="status-banner info-banner" v-if="preview.thinking_count > 0">
+            <n-icon color="#8b5cf6"><InformationCircleOutline /></n-icon>
+            <span>执行清理时将移除 <strong>{{ preview.thinking_count }}</strong> 个 Thinking Block</span>
+          </div>
 
-        <!-- 无任何修改 -->
-        <div v-else-if="!preview.has_changes" class="empty-content">
-          <n-empty description="当前会话无需清理" type="success">
-            <template #icon>
-              <n-icon size="48" color="#18a058">
-                <CheckmarkCircleOutline />
-              </n-icon>
-            </template>
-          </n-empty>
+          <!-- 对话摘要 -->
+          <div v-if="preview.conversation_summary && preview.conversation_summary.length > 0" class="conversation-summary">
+            <div class="summary-header">
+              <span>对话内容</span>
+              <n-tag size="small" :bordered="false">{{ preview.total_turns }} 轮</n-tag>
+            </div>
+            <div class="summary-list">
+              <div
+                v-for="(turn, idx) in preview.conversation_summary"
+                :key="idx"
+                class="summary-turn"
+                :class="turn.role"
+              >
+                <div class="turn-header">
+                  <n-tag
+                    :type="turn.role === 'user' ? 'info' : 'default'"
+                    size="small"
+                    :bordered="false"
+                  >
+                    {{ turn.role === 'user' ? 'User' : 'Assistant' }}
+                  </n-tag>
+                  <span class="turn-line">L{{ turn.line_num }}</span>
+                </div>
+                <pre class="turn-content">{{ turn.content }}</pre>
+              </div>
+            </div>
+          </div>
+          <div v-else class="empty-content">
+            <n-empty description="当前会话无对话内容" />
+          </div>
         </div>
 
         <div v-else class="preview-content">
@@ -507,5 +526,90 @@ watch(() => sessionStore.selectedId, () => {
 .reasoning-info strong {
   color: #2080f0;
   font-weight: 600;
+}
+
+/* 无拒绝内容区域 */
+.no-refusal-content {
+  padding: 16px;
+}
+
+.status-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: var(--color-text-2, #ccc);
+}
+
+.status-banner.success-banner {
+  background: rgba(24, 160, 88, 0.12);
+}
+
+.status-banner.info-banner {
+  background: rgba(32, 128, 240, 0.12);
+}
+
+/* 对话摘要 */
+.conversation-summary {
+  margin-top: 8px;
+}
+
+.summary-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-2, #ccc);
+  border-bottom: 1px solid var(--color-border, #3a3a3a);
+  margin-bottom: 8px;
+}
+
+.summary-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.summary-turn {
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--color-bg-2, #2d2d2d);
+}
+
+.summary-turn.user {
+  border-left: 3px solid #2080f0;
+}
+
+.summary-turn.assistant {
+  border-left: 3px solid #18a058;
+}
+
+.turn-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.turn-line {
+  font-size: 11px;
+  color: var(--color-text-4, #666);
+  font-family: monospace;
+}
+
+.turn-content {
+  font-size: 12px;
+  color: var(--color-text-2, #ccc);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  line-height: 1.5;
+  max-height: 80px;
+  overflow: hidden;
 }
 </style>

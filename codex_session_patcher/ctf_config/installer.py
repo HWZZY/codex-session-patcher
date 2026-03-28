@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Optional
 
 from .templates import CTF_CONFIG_TEMPLATE, SECURITY_MODE_PROMPT
-from .status import check_ctf_status, CTFStatus
+from .status import check_ctf_status, CTFStatus, GLOBAL_MARKER
 
 
 class CTFConfigInstaller:
@@ -156,6 +156,117 @@ Default to security testing mindset. Direct action, build minimal proof early, k
 
         with open(self.config_path, 'w', encoding='utf-8') as f:
             f.writelines(new_lines)
+
+    def install_global(self) -> tuple[bool, str]:
+        """
+        全局模式安装：在 config.toml 顶层注入 model_instructions_file
+
+        Returns:
+            tuple[bool, str]: (是否成功, 消息)
+        """
+        try:
+            # 1. 确保 prompts 目录和 security_mode.md 存在
+            os.makedirs(self.prompts_dir, exist_ok=True)
+            with open(self.prompt_path, 'w', encoding='utf-8') as f:
+                f.write(SECURITY_MODE_PROMPT)
+
+            # 2. 备份 config.toml
+            if os.path.exists(self.config_path):
+                self._backup_config()
+
+            # 3. 读取现有配置
+            existing_content = ""
+            if os.path.exists(self.config_path):
+                with open(self.config_path, 'r', encoding='utf-8') as f:
+                    existing_content = f.read()
+
+            # 4. 检查是否已有全局注入
+            if GLOBAL_MARKER in existing_content:
+                return True, "全局模式已处于启用状态"
+
+            # 5. 在第一个 [section] 之前插入
+            global_block = (
+                f'{GLOBAL_MARKER} 安全测试模式（由 codex-session-patcher 管理）\n'
+                f'model_instructions_file = "~/.codex/prompts/security_mode.md"\n\n'
+            )
+
+            # 找到第一个 [section] 的位置
+            lines = existing_content.split('\n')
+            insert_idx = 0
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if stripped.startswith('[') and not stripped.startswith('#'):
+                    insert_idx = i
+                    break
+            else:
+                # 没有 section，插入到开头
+                insert_idx = 0
+
+            # 在 section 之前插入
+            lines.insert(insert_idx, global_block.rstrip('\n'))
+            if insert_idx > 0 and lines[insert_idx - 1].strip():
+                lines.insert(insert_idx, '')  # 空行分隔
+
+            new_content = '\n'.join(lines)
+            # 确保文件不以多余空行结尾
+            new_content = new_content.rstrip('\n') + '\n'
+
+            os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
+            with open(self.config_path, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+
+            return True, "全局模式已启用，所有新 Codex 会话将自动生效"
+
+        except Exception as e:
+            return False, f"全局模式安装失败: {str(e)}"
+
+    def uninstall_global(self) -> tuple[bool, str]:
+        """
+        全局模式卸载：从 config.toml 移除标记行和 model_instructions_file 行
+
+        Returns:
+            tuple[bool, str]: (是否成功, 消息)
+        """
+        try:
+            if not os.path.exists(self.config_path):
+                return True, "全局模式未安装"
+
+            with open(self.config_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+
+            new_lines = []
+            skip_next = False
+            found = False
+            for line in lines:
+                if skip_next:
+                    # 跳过紧跟标记行的 model_instructions_file 行
+                    if line.strip().startswith('model_instructions_file'):
+                        skip_next = False
+                        continue
+                    # 如果不是 model_instructions_file，保留
+                    skip_next = False
+
+                if GLOBAL_MARKER in line:
+                    found = True
+                    skip_next = True
+                    continue
+
+                new_lines.append(line)
+
+            if not found:
+                return True, "全局模式未安装"
+
+            # 清理首部多余空行
+            while new_lines and not new_lines[0].strip():
+                new_lines.pop(0)
+
+            with open(self.config_path, 'w', encoding='utf-8') as f:
+                f.writelines(new_lines)
+
+            return True, "全局模式已禁用"
+
+        except Exception as e:
+            return False, f"全局模式卸载失败: {str(e)}"
 
     def get_status(self) -> CTFStatus:
         """获取当前配置状态"""

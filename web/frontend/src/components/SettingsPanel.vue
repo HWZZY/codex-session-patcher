@@ -60,6 +60,26 @@
       <!-- 会话清理配置 -->
       <n-card title="会话清理" size="small">
         <n-space vertical>
+          <n-form-item label="启用 Claude Code 支持">
+            <n-switch
+              :value="settingsStore.claudeCodeEnabled"
+              @update:value="settingsStore.setClaudeCodeEnabled"
+            />
+            <template #feedback>
+              <span class="form-hint">开启后可管理 Claude Code 会话、使用 Claude Code CTF 模式</span>
+            </template>
+          </n-form-item>
+
+          <n-form-item label="显示全部会话">
+            <n-switch
+              :value="settingsStore.showAllSessions"
+              @update:value="settingsStore.setShowAllSessions"
+            />
+            <template #feedback>
+              <span class="form-hint">关闭时仅显示有拒绝和已清理的会话，减少列表干扰</span>
+            </template>
+          </n-form-item>
+
           <n-form-item label="默认替换文本">
             <n-input
               v-model:value="settingsStore.mockResponse"

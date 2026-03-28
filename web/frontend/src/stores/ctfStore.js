@@ -7,6 +7,7 @@ export const useCTFStore = defineStore('ctf', {
     status: null,
     loading: false,
     installLoading: false,
+    globalInstallLoading: false,
 
     // 提示词改写
     originalRequest: '',
@@ -59,6 +60,38 @@ export const useCTFStore = defineStore('ctf', {
         return { success: false, message: error.message }
       } finally {
         this.installLoading = false
+      }
+    },
+
+    // 启用全局模式
+    async installGlobal() {
+      this.globalInstallLoading = true
+      try {
+        const response = await api.post('/ctf/global/install')
+        if (response.success) {
+          await this.fetchStatus()
+        }
+        return response
+      } catch (error) {
+        return { success: false, message: error.message }
+      } finally {
+        this.globalInstallLoading = false
+      }
+    },
+
+    // 禁用全局模式
+    async uninstallGlobal() {
+      this.globalInstallLoading = true
+      try {
+        const response = await api.post('/ctf/global/uninstall')
+        if (response.success) {
+          await this.fetchStatus()
+        }
+        return response
+      } catch (error) {
+        return { success: false, message: error.message }
+      } finally {
+        this.globalInstallLoading = false
       }
     },
 

@@ -12,11 +12,14 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
+import time as _time
+
 from .schemas import (
     Session, SessionListResponse, SessionFormatEnum, PreviewResponse,
     PatchResponse, Settings, ChangeDetail, ChangeType, WSMessage,
     AIRewriteResponse, PatchRequest, BackupInfo, RestoreResponse, DiffItem,
-    CTFStatusResponse, CTFInstallResponse, PromptRewriteRequest, PromptRewriteResponse
+    CTFStatusResponse, CTFInstallResponse, PromptRewriteRequest, PromptRewriteResponse,
+    ConversationTurn,
 )
 
 from codex_session_patcher.core import (
@@ -65,6 +68,46 @@ manager = ConnectionManager()
 # ─── 全局检测器 ──────────────────────────────────────────────────────────────
 
 _detector = RefusalDetector()
+
+
+# ─── 会话缓存 ────────────────────────────────────────────────────────────────
+
+_session_cache: dict = {
+    'sessions': None,       # Optional[list[Session]]
+    'timestamp': 0.0,       # 缓存时间
+    'ttl': 30,              # 30 秒 TTL
+}
+
+
+def _invalidate_session_cache():
+    """清除会话缓存"""
+    _session_cache['sessions'] = None
+    _session_cache['timestamp'] = 0.0
+
+
+def _get_cached_sessions(
+    session_format: Optional[SessionFormat] = None,
+    skip_refusal_check: bool = False,
+) -> list:
+    """带缓存的会话列表获取"""
+    now = _time.time()
+    cached = _session_cache['sessions']
+    # 缓存命中：非跳过检测请求 + 缓存存在 + 未过期
+    if cached is not None and not skip_refusal_check and (now - _session_cache['timestamp']) < _session_cache['ttl']:
+        if session_format is None:
+            return cached
+        fmt_str = _to_schema_format(session_format)
+        return [s for s in cached if s.format == fmt_str]
+
+    # 缓存未命中，执行扫描
+    sessions = list_sessions(session_format=session_format, skip_refusal_check=skip_refusal_check)
+
+    # 只缓存全量扫描（含拒绝检测）的结果
+    if session_format is None and not skip_refusal_check:
+        _session_cache['sessions'] = sessions
+        _session_cache['timestamp'] = now
+
+    return sessions
 
 
 # ─── 格式解析工具 ────────────────────────────────────────────────────────────
@@ -235,16 +278,62 @@ def preview_session(file_path: str, mock_response: str = MOCK_RESPONSE,
         except json.JSONDecodeError:
             continue
 
-    # 检测拒绝
+    # 检测拒绝 & 收集对话摘要
     assistant_msgs = strategy.get_assistant_messages(parsed_lines)
+    refusal_lines = set()
     for idx, msg in assistant_msgs:
         content = strategy.extract_text_content(msg)
         if content and detector.detect(content):
+            refusal_lines.add(idx)
             changes.append(ChangeDetail(
                 line_num=idx + 1,
                 type=ChangeType.REPLACE,
                 original=content[:500] + ('...' if len(content) > 500 else ''),
                 replacement=mock_response
+            ))
+
+    # 收集对话摘要（user + assistant 消息）
+    conversation_summary = []
+    for idx, line in enumerate(parsed_lines):
+        role = None
+        content = ''
+        line_type = line.get('type', '')
+
+        # Claude Code 格式
+        if line_type == 'human':
+            role = 'user'
+            msg = line.get('message', {})
+            msg_content = msg.get('content', '')
+            if isinstance(msg_content, str):
+                content = msg_content
+            elif isinstance(msg_content, list):
+                texts = [item.get('text', '') for item in msg_content if isinstance(item, dict) and item.get('type') == 'text']
+                content = '\n'.join(texts)
+        elif line_type == 'assistant':
+            role = 'assistant'
+            content = strategy.extract_text_content(line)
+
+        # Codex 格式
+        elif line_type == 'response_item':
+            payload = line.get('payload', {})
+            msg_role = payload.get('role', '')
+            if msg_role == 'assistant':
+                role = 'assistant'
+                content = strategy.extract_text_content(line)
+        elif line_type == 'user_message':
+            role = 'user'
+            content = line.get('content', '')
+            if isinstance(content, list):
+                texts = [item.get('text', '') for item in content if isinstance(item, dict)]
+                content = '\n'.join(texts)
+
+        if role and content:
+            truncated = content[:200] + ('...' if len(content) > 200 else '')
+            conversation_summary.append(ConversationTurn(
+                role=role,
+                content=truncated,
+                line_num=idx + 1,
+                has_refusal=idx in refusal_lines,
             ))
 
     # 统计推理内容（Codex 格式独立行）
@@ -264,6 +353,8 @@ def preview_session(file_path: str, mock_response: str = MOCK_RESPONSE,
         changes=changes,
         reasoning_count=reasoning_count,
         thinking_count=thinking_count,
+        conversation_summary=conversation_summary,
+        total_turns=len(conversation_summary),
     )
 
 
@@ -419,7 +510,7 @@ def compute_backup_diff(current_path: str, backup_path: str,
 async def get_sessions(skip_check: bool = False, limit: int = 0, format: str = "auto"):
     """获取会话列表"""
     session_format = _resolve_format(format)
-    sessions = list_sessions(session_format=session_format, skip_refusal_check=skip_check)
+    sessions = _get_cached_sessions(session_format=session_format, skip_refusal_check=skip_check)
     limited_sessions = sessions[:limit] if limit > 0 else sessions
     return SessionListResponse(
         sessions=limited_sessions,
@@ -429,8 +520,8 @@ async def get_sessions(skip_check: bool = False, limit: int = 0, format: str = "
 
 
 def _find_session(session_id: str, session_format: Optional[SessionFormat] = None) -> Optional[Session]:
-    """查找会话"""
-    sessions = list_sessions(session_format=session_format, skip_refusal_check=True)
+    """查找会话（优先从缓存获取）"""
+    sessions = _get_cached_sessions(session_format=session_format, skip_refusal_check=True)
     for session in sessions:
         if session.id == session_id:
             return session
@@ -440,46 +531,51 @@ def _find_session(session_id: str, session_format: Optional[SessionFormat] = Non
 @router.get("/sessions/{session_id}")
 async def get_session(session_id: str, check_refusal: bool = True, format: str = "auto"):
     """获取单个会话详情"""
-    session_format = _resolve_format(format)
-    sessions = list_sessions(session_format=session_format, skip_refusal_check=not check_refusal)
-    for session in sessions:
-        if session.id == session_id:
-            return session
-    raise HTTPException(status_code=404, detail="会话不存在")
+    # 优先从缓存查找，避免全量扫描
+    session = _find_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    # 如果需要拒绝检测且缓存中未检测过，单独检测这一个文件
+    if check_refusal and not session.has_refusal:
+        core_fmt = _session_core_format(session)
+        has_refusal, refusal_count = check_session_refusal(session.path, core_fmt)
+        session = session.model_copy(update={'has_refusal': has_refusal, 'refusal_count': refusal_count})
+
+    return session
 
 
 @router.post("/sessions/{session_id}/preview", response_model=PreviewResponse)
 async def preview_session_api(session_id: str):
     """预览会话修改"""
+    session = _find_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
     settings = load_settings()
-    fmt = _resolve_format(settings.active_format)
-    sessions = list_sessions(session_format=fmt)
-    for session in sessions:
-        if session.id == session_id:
-            core_fmt = _session_core_format(session)
-            result = preview_session(
-                session.path,
-                settings.mock_response,
-                settings.custom_keywords,
-                session_format=core_fmt,
+    core_fmt = _session_core_format(session)
+    result = preview_session(
+        session.path,
+        settings.mock_response,
+        settings.custom_keywords,
+        session_format=core_fmt,
+    )
+
+    # 如果有备份，计算 diff
+    if session.has_backup:
+        session_dir = os.path.dirname(session.path)
+        base_name = os.path.basename(session.path)
+        bak_files = []
+        for f in os.listdir(session_dir):
+            if f.startswith(base_name + ".") and f.endswith(".bak"):
+                bak_files.append(os.path.join(session_dir, f))
+        if bak_files:
+            bak_files.sort(reverse=True)
+            result.diff_items = compute_backup_diff(
+                session.path, bak_files[0], session_format=core_fmt
             )
 
-            # 如果有备份，计算 diff
-            if session.has_backup:
-                session_dir = os.path.dirname(session.path)
-                base_name = os.path.basename(session.path)
-                bak_files = []
-                for f in os.listdir(session_dir):
-                    if f.startswith(base_name + ".") and f.endswith(".bak"):
-                        bak_files.append(os.path.join(session_dir, f))
-                if bak_files:
-                    bak_files.sort(reverse=True)
-                    result.diff_items = compute_backup_diff(
-                        session.path, bak_files[0], session_format=core_fmt
-                    )
-
-            return result
-    raise HTTPException(status_code=404, detail="会话不存在")
+    return result
 
 
 @router.post("/sessions/{session_id}/ai-rewrite", response_model=AIRewriteResponse)
@@ -494,123 +590,123 @@ async def ai_rewrite_session_api(session_id: str):
     if not settings.ai_model:
         return AIRewriteResponse(success=False, error="AI 配置不完整：缺少模型名称")
 
-    fmt = _resolve_format(settings.active_format)
-    sessions = list_sessions(session_format=fmt)
-    for session in sessions:
-        if session.id == session_id:
-            try:
-                from .ai_service import generate_ai_rewrite
-                core_fmt = _session_core_format(session)
-                result = await generate_ai_rewrite(
-                    session.path, settings, settings.custom_keywords,
-                    session_format=core_fmt,
-                )
-                return result
-            except Exception as e:
-                return AIRewriteResponse(success=False, error=str(e))
-    raise HTTPException(status_code=404, detail="会话不存在")
+    session = _find_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    try:
+        from .ai_service import generate_ai_rewrite
+        core_fmt = _session_core_format(session)
+        result = await generate_ai_rewrite(
+            session.path, settings, settings.custom_keywords,
+            session_format=core_fmt,
+        )
+        return result
+    except Exception as e:
+        return AIRewriteResponse(success=False, error=str(e))
 
 
 @router.post("/sessions/{session_id}/patch", response_model=PatchResponse)
 async def patch_session_api(session_id: str, body: PatchRequest = None):
     """执行会话清理"""
+    session = _find_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
     settings = load_settings()
-    fmt = _resolve_format(settings.active_format)
-    sessions = list_sessions(session_format=fmt)
-    for session in sessions:
-        if session.id == session_id:
-            mock_response = settings.mock_response
+    mock_response = settings.mock_response
 
-            replacements_map = {}
-            if body and body.replacements:
-                for item in body.replacements:
-                    replacements_map[item.line_num] = item.replacement_text
-            elif body and body.replacement_text:
-                mock_response = body.replacement_text
+    replacements_map = {}
+    if body and body.replacements:
+        for item in body.replacements:
+            replacements_map[item.line_num] = item.replacement_text
+    elif body and body.replacement_text:
+        mock_response = body.replacement_text
 
-            await manager.broadcast(WSMessage(
-                type="log",
-                data={"level": "info", "message": f"开始处理会话: {session_id}"}
-            ))
+    await manager.broadcast(WSMessage(
+        type="log",
+        data={"level": "info", "message": f"开始处理会话: {session_id}"}
+    ))
 
-            core_fmt = _session_core_format(session)
-            result = patch_session(
-                session.path,
-                mock_response,
-                settings.custom_keywords,
-                replacements=replacements_map,
-                session_format=core_fmt,
-            )
+    core_fmt = _session_core_format(session)
+    result = patch_session(
+        session.path,
+        mock_response,
+        settings.custom_keywords,
+        replacements=replacements_map,
+        session_format=core_fmt,
+    )
 
-            if result.success:
-                await manager.broadcast(WSMessage(
-                    type="log",
-                    data={"level": "success", "message": result.message}
-                ))
-            else:
-                await manager.broadcast(WSMessage(
-                    type="log",
-                    data={"level": "error", "message": result.message}
-                ))
+    if result.success:
+        _invalidate_session_cache()
+        await manager.broadcast(WSMessage(
+            type="log",
+            data={"level": "success", "message": result.message}
+        ))
+    else:
+        await manager.broadcast(WSMessage(
+            type="log",
+            data={"level": "error", "message": result.message}
+        ))
 
-            return result
-    raise HTTPException(status_code=404, detail="会话不存在")
+    return result
 
 
 @router.get("/sessions/{session_id}/backups")
 async def list_backups(session_id: str):
     """列出会话的所有备份"""
-    sessions = list_sessions(skip_refusal_check=True)
-    for session in sessions:
-        if session.id == session_id:
-            session_dir = os.path.dirname(session.path)
-            base_name = os.path.basename(session.path)
-            backups = []
-            for f in os.listdir(session_dir):
-                if f.startswith(base_name + ".") and f.endswith(".bak"):
-                    bak_path = os.path.join(session_dir, f)
-                    stat = os.stat(bak_path)
-                    ts_part = f[len(base_name) + 1:-4]
-                    try:
-                        ts = datetime.strptime(ts_part, "%Y%m%d_%H%M%S").strftime("%Y-%m-%d %H:%M:%S")
-                    except ValueError:
-                        ts = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-                    backups.append(BackupInfo(
-                        filename=f,
-                        path=bak_path,
-                        timestamp=ts,
-                        size=stat.st_size
-                    ))
-            backups.sort(key=lambda b: b.timestamp, reverse=True)
-            return backups
-    raise HTTPException(status_code=404, detail="会话不存在")
+    session = _find_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    session_dir = os.path.dirname(session.path)
+    base_name = os.path.basename(session.path)
+    backups = []
+    for f in os.listdir(session_dir):
+        if f.startswith(base_name + ".") and f.endswith(".bak"):
+            bak_path = os.path.join(session_dir, f)
+            stat = os.stat(bak_path)
+            ts_part = f[len(base_name) + 1:-4]
+            try:
+                ts = datetime.strptime(ts_part, "%Y%m%d_%H%M%S").strftime("%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                ts = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+            backups.append(BackupInfo(
+                filename=f,
+                path=bak_path,
+                timestamp=ts,
+                size=stat.st_size
+            ))
+    backups.sort(key=lambda b: b.timestamp, reverse=True)
+    return backups
 
 
 @router.post("/sessions/{session_id}/restore", response_model=RestoreResponse)
 async def restore_session(session_id: str, backup_filename: str):
     """从备份还原会话"""
-    sessions = list_sessions(skip_refusal_check=True)
-    for session in sessions:
-        if session.id == session_id:
-            session_dir = os.path.dirname(session.path)
-            backup_path = os.path.join(session_dir, backup_filename)
+    session = _find_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
 
-            if not os.path.exists(backup_path):
-                return RestoreResponse(success=False, message="备份文件不存在")
+    session_dir = os.path.dirname(session.path)
+    backup_path = os.path.join(session_dir, backup_filename)
 
-            if os.path.dirname(os.path.realpath(backup_path)) != os.path.realpath(session_dir):
-                return RestoreResponse(success=False, message="非法的备份路径")
+    if not os.path.exists(backup_path):
+        return RestoreResponse(success=False, message="备份文件不存在")
 
-            try:
-                shutil.copy2(backup_path, session.path)
-                await manager.broadcast(WSMessage(
-                    type="log",
-                    data={"level": "success", "message": f"会话 {session_id} 已从备份还原"}
-                ))
-                return RestoreResponse(success=True, message="还原成功")
-            except Exception as e:
-                return RestoreResponse(success=False, message=f"还原失败: {str(e)}")
-    raise HTTPException(status_code=404, detail="会话不存在")
+    if os.path.dirname(os.path.realpath(backup_path)) != os.path.realpath(session_dir):
+        return RestoreResponse(success=False, message="非法的备份路径")
+
+    try:
+        shutil.copy2(backup_path, session.path)
+        _invalidate_session_cache()
+        await manager.broadcast(WSMessage(
+            type="log",
+            data={"level": "success", "message": f"会话 {session_id} 已从备份还原"}
+        ))
+        return RestoreResponse(success=True, message="还原成功")
+    except Exception as e:
+        return RestoreResponse(success=False, message=f"还原失败: {str(e)}")
 
 
 # ─── 设置 API ────────────────────────────────────────────────────────────────
@@ -654,6 +750,7 @@ async def get_ctf_status():
         config_exists=status.config_exists,
         prompt_exists=status.prompt_exists,
         profile_available=status.profile_available,
+        global_installed=status.global_installed,
         config_path=status.config_path,
         prompt_path=status.prompt_path,
     )
@@ -684,6 +781,44 @@ async def uninstall_ctf_config():
     from codex_session_patcher.ctf_config import CTFConfigInstaller
     installer = CTFConfigInstaller()
     success, message = installer.uninstall()
+
+    await manager.broadcast(WSMessage(
+        type="log",
+        data={"level": "success" if success else "error", "message": message}
+    ))
+
+    return CTFInstallResponse(
+        success=success,
+        message=message,
+        profile_command=""
+    )
+
+
+@router.post("/ctf/global/install", response_model=CTFInstallResponse)
+async def install_ctf_global():
+    """启用 CTF 全局模式"""
+    from codex_session_patcher.ctf_config import CTFConfigInstaller
+    installer = CTFConfigInstaller()
+    success, message = installer.install_global()
+
+    await manager.broadcast(WSMessage(
+        type="log",
+        data={"level": "success" if success else "error", "message": message}
+    ))
+
+    return CTFInstallResponse(
+        success=success,
+        message=message,
+        profile_command=""
+    )
+
+
+@router.post("/ctf/global/uninstall", response_model=CTFInstallResponse)
+async def uninstall_ctf_global():
+    """禁用 CTF 全局模式"""
+    from codex_session_patcher.ctf_config import CTFConfigInstaller
+    installer = CTFConfigInstaller()
+    success, message = installer.uninstall_global()
 
     await manager.broadcast(WSMessage(
         type="log",

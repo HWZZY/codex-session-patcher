@@ -57,6 +57,14 @@ class DiffItem(BaseModel):
     after: str
 
 
+class ConversationTurn(BaseModel):
+    """对话摘要条目"""
+    role: str           # "user" | "assistant"
+    content: str        # 截取前 200 字符
+    line_num: int       # 原始行号
+    has_refusal: bool = False  # 是否包含拒绝
+
+
 class PreviewResponse(BaseModel):
     """预览结果"""
     has_changes: bool
@@ -64,6 +72,8 @@ class PreviewResponse(BaseModel):
     reasoning_count: int = 0
     thinking_count: int = 0  # Claude Code 中将被移除的 thinking block 数量
     diff_items: List[DiffItem] = []
+    conversation_summary: List[ConversationTurn] = []  # 对话摘要
+    total_turns: int = 0  # 总对话轮数
 
 
 class PatchResponse(BaseModel):
@@ -148,6 +158,7 @@ class CTFStatusResponse(BaseModel):
     config_exists: bool
     prompt_exists: bool
     profile_available: bool
+    global_installed: bool = False
     config_path: Optional[str] = None
     prompt_path: Optional[str] = None
 

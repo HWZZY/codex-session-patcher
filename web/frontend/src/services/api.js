@@ -2,7 +2,7 @@ const API_BASE = '/api'
 
 // 请求缓存
 const cache = new Map()
-const CACHE_TTL = 5000 // 5秒缓存
+const CACHE_TTL = 30000 // 30秒缓存，与后端缓存对齐
 
 // 待处理请求（用于去重）
 const pendingRequests = new Map()
