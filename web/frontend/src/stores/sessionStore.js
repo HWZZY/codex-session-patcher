@@ -13,6 +13,7 @@ export const useSessionStore = defineStore('session', () => {
   const aiRewriteLoading = ref(false)
   const lastError = ref(null) // 最近一次错误信息，组件层可监听并展示
   const activeTab = ref('codex') // 'codex' | 'claude_code' | 'opencode'
+  const isSearchMode = ref(false) // 是否处于搜索模式
   let _tabInitialized = false
 
   // 按格式拆分
@@ -130,7 +131,7 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  async function patchSession(id) {
+  async function patchSession(id, selectedLines = null, cleanReasoning = null) {
     let replacements = null
     if (aiRewrite.value?.items?.length > 0) {
       replacements = aiRewrite.value.items.map(item => ({
@@ -139,7 +140,7 @@ export const useSessionStore = defineStore('session', () => {
       }))
     }
     try {
-      const data = await api.patchSession(id || selectedId.value, replacements)
+      const data = await api.patchSession(id || selectedId.value, replacements, selectedLines, cleanReasoning)
       if (data.success) {
         aiRewrite.value = null
         await fetchSessions()
@@ -153,6 +154,41 @@ export const useSessionStore = defineStore('session', () => {
       console.error('Failed to patch session:', error)
       throw error
     }
+  }
+
+  // 搜索会话内容
+  async function searchSessions(query) {
+    if (!query || !query.trim()) {
+      isSearchMode.value = false
+      await fetchSessions()
+      return
+    }
+    loading.value = true
+    isSearchMode.value = true
+    const previousSelectedId = selectedId.value
+    try {
+      const data = await api.searchSessions(query, 'auto')
+      sessions.value = data.sessions
+      // 如果之前有选中的会话，且在搜索结果中，保留选中状态和预览
+      const stillExists = previousSelectedId && data.sessions.some(s => s.id === previousSelectedId)
+      if (!stillExists) {
+        // 只有当选中的会话不在搜索结果中时才清除
+        selectedId.value = null
+        preview.value = null
+        aiRewrite.value = null
+      }
+    } catch (error) {
+      console.error('Failed to search sessions:', error)
+      lastError.value = error.message || '搜索失败'
+    } finally {
+      loading.value = false
+    }
+  }
+
+  // 清除搜索（恢复全部会话）
+  async function clearSearch() {
+    isSearchMode.value = false
+    await fetchSessions()
   }
 
   async function listBackups(id) {
@@ -185,6 +221,7 @@ export const useSessionStore = defineStore('session', () => {
     aiRewriteLoading,
     lastError,
     activeTab,
+    isSearchMode,
     codexSessions,
     claudeSessions,
     opencodeSessions,
@@ -195,6 +232,8 @@ export const useSessionStore = defineStore('session', () => {
     previewSession,
     requestAIRewrite,
     patchSession,
+    searchSessions,
+    clearSearch,
     listBackups,
     restoreSession,
     getSelectedSession,

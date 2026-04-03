@@ -42,10 +42,18 @@
             <span>{{ $t('preview.noRefusal') }}</span>
           </div>
           <div class="status-banner info-banner" v-if="preview.reasoning_count > 0">
+            <n-checkbox
+              :checked="cleanReasoning"
+              @update:checked="emit('update:cleanReasoning', $event)"
+            />
             <n-icon color="#2080f0"><InformationCircleOutline /></n-icon>
             <span>{{ $t('preview.willDeleteReasoning', { count: preview.reasoning_count }) }}</span>
           </div>
-          <div class="status-banner info-banner" v-if="preview.thinking_count > 0">
+          <div class="status-banner info-banner thinking-banner-inline" v-if="preview.thinking_count > 0">
+            <n-checkbox
+              :checked="cleanReasoning"
+              @update:checked="emit('update:cleanReasoning', $event)"
+            />
             <n-icon color="#8b5cf6"><InformationCircleOutline /></n-icon>
             <span>{{ $t('preview.willDeleteThinking', { count: preview.thinking_count }) }}</span>
           </div>
@@ -85,14 +93,33 @@
         <div v-else class="preview-content">
           <!-- 推理内容提示 -->
           <div v-if="preview.reasoning_count > 0" class="reasoning-banner">
+            <n-checkbox
+              :checked="cleanReasoning"
+              @update:checked="$emit('update:cleanReasoning', $event)"
+            />
             <n-icon><InformationCircleOutline /></n-icon>
             <span>{{ $t('preview.willDeleteReasoning', { count: preview.reasoning_count }) }}</span>
           </div>
 
           <!-- Thinking Block 提示 -->
           <div v-if="preview.thinking_count > 0" class="thinking-banner">
+            <n-checkbox
+              :checked="cleanReasoning"
+              @update:checked="$emit('update:cleanReasoning', $event)"
+            />
             <n-icon><InformationCircleOutline /></n-icon>
             <span>{{ $t('preview.willDeleteThinking', { count: preview.thinking_count }) }}</span>
+          </div>
+
+          <!-- 选择操作栏 -->
+          <div v-if="preview.changes && preview.changes.length > 1" class="select-toolbar">
+            <n-checkbox :checked="isAllSelected" @update:checked="toggleSelectAll" />
+            <span class="select-label">
+              {{ $t('preview.selectedCount', { selected: selectedLines.size, total: preview.changes.length }) }}
+            </span>
+            <n-button text size="tiny" type="primary" @click="toggleSelectAll">
+              {{ isAllSelected ? $t('preview.deselectAll') : $t('preview.selectAll') }}
+            </n-button>
           </div>
 
           <div class="changes-list">
@@ -100,8 +127,13 @@
               v-for="(change, index) in preview.changes"
               :key="index"
               class="change-item"
+              :class="{ unselected: !selectedLines.has(change.line_num) }"
             >
               <div class="change-header">
+                <n-checkbox
+                  :checked="selectedLines.has(change.line_num)"
+                  @update:checked="toggleLine(change.line_num)"
+                />
                 <n-tag
                   :type="changeTagType(change.type)"
                   size="small"
@@ -241,8 +273,71 @@ const { t } = useI18n()
 const sessionStore = useSessionStore()
 const activeTab = ref('changes')
 
+// 接收 cleanReasoning prop
+const props = defineProps({
+  cleanReasoning: {
+    type: Boolean,
+    default: true
+  }
+})
+
+// 定义 emit
+const emit = defineEmits(['update:cleanReasoning'])
+
+// 选中的行号集合
+const selectedLines = ref(new Set())
+
 const session = computed(() => sessionStore.getSelectedSession())
 const preview = computed(() => sessionStore.preview)
+
+// 监听预览数据变化，初始化选中状态（默认全选）
+watch(() => sessionStore.preview, (newPreview) => {
+  if (newPreview?.changes?.length) {
+    selectedLines.value = new Set(newPreview.changes.map(c => c.line_num))
+  } else {
+    selectedLines.value = new Set()
+  }
+}, { immediate: true })
+
+// 全选/取消全选
+function toggleSelectAll() {
+  if (!preview.value?.changes?.length) return
+  if (selectedLines.value.size === preview.value.changes.length) {
+    selectedLines.value = new Set()
+  } else {
+    selectedLines.value = new Set(preview.value.changes.map(c => c.line_num))
+  }
+}
+
+// 切换单个选择
+function toggleLine(lineNum) {
+  const newSet = new Set(selectedLines.value)
+  if (newSet.has(lineNum)) {
+    newSet.delete(lineNum)
+  } else {
+    newSet.add(lineNum)
+  }
+  selectedLines.value = newSet
+}
+
+// 是否全选
+const isAllSelected = computed(() => {
+  if (!preview.value?.changes?.length) return false
+  return selectedLines.value.size === preview.value.changes.length
+})
+
+// 获取选中的行号列表
+function getSelectedLines() {
+  return Array.from(selectedLines.value)
+}
+
+// 暴露方法给父组件
+defineExpose({
+  getSelectedLines,
+  hasChanges: () => preview.value?.has_changes,
+  changesCount: () => preview.value?.changes?.length || 0,
+  selectedCount: () => selectedLines.value.size
+})
 
 function changeTagType(type) {
   if (type === 'replace') return 'warning'
@@ -353,11 +448,30 @@ watch(() => sessionStore.selectedId, () => {
   padding: 12px;
 }
 
+.change-item.unselected {
+  opacity: 0.5;
+}
+
 .change-header {
   display: flex;
   align-items: center;
   gap: 12px;
   margin-bottom: 12px;
+}
+
+.select-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--color-bg-2, #2d2d2d);
+  border-radius: 6px;
+  margin-bottom: 12px;
+}
+
+.select-label {
+  font-size: 13px;
+  color: var(--color-text-2, #ccc);
 }
 
 .line-num {
@@ -504,6 +618,10 @@ watch(() => sessionStore.selectedId, () => {
   color: var(--color-text-2, #ccc);
 }
 
+.thinking-banner .n-checkbox {
+  flex-shrink: 0;
+}
+
 /* Diff 视图 Thinking Block 移除 */
 .diff-line.thinking-removed {
   background: rgba(123, 104, 238, 0.15);
@@ -524,6 +642,10 @@ watch(() => sessionStore.selectedId, () => {
   margin-bottom: 16px;
   font-size: 13px;
   color: var(--color-text-2, #ccc);
+}
+
+.reasoning-banner .n-checkbox {
+  flex-shrink: 0;
 }
 
 .reasoning-info {
@@ -550,6 +672,10 @@ watch(() => sessionStore.selectedId, () => {
   margin-bottom: 12px;
   font-size: 13px;
   color: var(--color-text-2, #ccc);
+}
+
+.status-banner .n-checkbox {
+  flex-shrink: 0;
 }
 
 .status-banner.success-banner {

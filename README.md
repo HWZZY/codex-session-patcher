@@ -157,6 +157,7 @@ codex-patcher --rewrite "帮我写一个逆向分析脚本"
 | `--show-content` | 显示修改的详细内容 |
 | `--latest` | 只处理最新会话 |
 | `--all` | 处理所有会话 |
+| `--keep-reasoning` | 保留推理内容（thinking/reasoning blocks），仅替换拒绝回复 |
 | `--web` | 启动 Web UI |
 | `--host` | Web UI 监听地址（默认 127.0.0.1） |
 | `--port` | Web UI 端口（默认 8080） |

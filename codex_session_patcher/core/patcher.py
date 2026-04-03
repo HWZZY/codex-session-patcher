@@ -29,6 +29,8 @@ def clean_session_jsonl(
     show_content: bool = False,
     mock_response: Optional[str] = None,
     session_format: SessionFormat = SessionFormat.CODEX,
+    selected_lines: Optional[List[int]] = None,
+    clean_reasoning: bool = True,
 ) -> Tuple[List[Dict[str, Any]], bool, List[ChangeDetail]]:
     """
     清洗 JSONL 会话数据
@@ -39,6 +41,8 @@ def clean_session_jsonl(
         show_content: 是否返回详细内容
         mock_response: 替换文本
         session_format: 会话格式
+        selected_lines: 只清理选中的行号列表（None 表示全部清理）
+        clean_reasoning: 是否清理推理内容（thinking/reasoning blocks）
 
     Returns:
         (清洗后的行列表, 是否进行了修改, 修改详情列表)
@@ -48,6 +52,9 @@ def clean_session_jsonl(
 
     if mock_response is None:
         mock_response = MOCK_RESPONSE
+
+    # selected_lines 转为集合方便快速查找
+    selected_set = set(selected_lines) if selected_lines else None
 
     strategy = get_format_strategy(session_format)
 
@@ -69,6 +76,11 @@ def clean_session_jsonl(
             refusal_groups.append((msg_idx, []))
 
     for primary_idx, companion_idxs in refusal_groups:
+        # 如果指定了选中行，检查是否在选中列表中
+        primary_line_num = primary_idx + 1
+        if selected_set is not None and primary_line_num not in selected_set:
+            continue  # 跳过未选中的记录
+
         primary_msg = lines[primary_idx]
         content = strategy.extract_text_content(primary_msg)
         all_line_nums = sorted([primary_idx + 1] + [i + 1 for i in companion_idxs])
@@ -90,44 +102,46 @@ def clean_session_jsonl(
             lines[cidx] = strategy.update_text_content(lines[cidx], mock_response)
         modified = True
 
-    # 2. 删除独立的 thinking/reasoning 行（Codex 格式）
-    thinking_items = strategy.get_thinking_items(lines)
-    if thinking_items:
-        for idx, item in thinking_items:
-            change = ChangeDetail(
-                line_num=idx + 1,
-                change_type='delete'
-            )
-            if show_content:
-                payload = lines[idx].get('payload', {})
-                summary = payload.get('summary', [])
-                if isinstance(summary, list):
-                    texts = [s.get('text', '') for s in summary if isinstance(s, dict)]
-                    content_preview = ' '.join(texts)[:100]
-                else:
-                    content_preview = str(summary)[:100]
-                if not content_preview:
-                    content_preview = '推理内容'
-                change.original_content = content_preview + ('...' if len(content_preview) >= 100 else '')
-            changes.append(change)
-            lines[idx] = None
-            modified = True
+    # 2. 删除独立的 thinking/reasoning 行（Codex 格式）- 可选
+    if clean_reasoning:
+        thinking_items = strategy.get_thinking_items(lines)
+        if thinking_items:
+            for idx, item in thinking_items:
+                change = ChangeDetail(
+                    line_num=idx + 1,
+                    change_type='delete'
+                )
+                if show_content:
+                    payload = lines[idx].get('payload', {})
+                    summary = payload.get('summary', [])
+                    if isinstance(summary, list):
+                        texts = [s.get('text', '') for s in summary if isinstance(s, dict)]
+                        content_preview = ' '.join(texts)[:100]
+                    else:
+                        content_preview = str(summary)[:100]
+                    if not content_preview:
+                        content_preview = '推理内容'
+                    change.original_content = content_preview + ('...' if len(content_preview) >= 100 else '')
+                changes.append(change)
+                lines[idx] = None
+                modified = True
 
-    # 3. 移除嵌入在消息 content[] 中的 thinking 块（Claude Code 格式）
-    for idx, line in enumerate(lines):
-        if line is None:
-            continue
-        updated, removed_count = strategy.remove_thinking_from_message(line)
-        if removed_count > 0:
-            change = ChangeDetail(
-                line_num=idx + 1,
-                change_type='remove_thinking'
-            )
-            if show_content:
-                change.original_content = f'移除 {removed_count} 个 thinking block'
-            changes.append(change)
-            lines[idx] = updated
-            modified = True
+    # 3. 移除嵌入在消息 content[] 中的 thinking 块（Claude Code 格式）- 可选
+    if clean_reasoning:
+        for idx, line in enumerate(lines):
+            if line is None:
+                continue
+            updated, removed_count = strategy.remove_thinking_from_message(line)
+            if removed_count > 0:
+                change = ChangeDetail(
+                    line_num=idx + 1,
+                    change_type='remove_thinking'
+                )
+                if show_content:
+                    change.original_content = f'移除 {removed_count} 个 thinking block'
+                changes.append(change)
+                lines[idx] = updated
+                modified = True
 
     # 4. 过滤掉标记为 None 的行
     lines = [line for line in lines if line is not None]

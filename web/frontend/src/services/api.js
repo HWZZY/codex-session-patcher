@@ -99,6 +99,11 @@ export async function getSessions(skipCheck = false, format = 'auto') {
   return request(`/sessions?skip_check=${skipCheck}&format=${format}`)
 }
 
+// 搜索会话内容
+export async function searchSessions(query, format = 'auto') {
+  return request(`/sessions/search?query=${encodeURIComponent(query)}&format=${format}`)
+}
+
 // 获取单个会话
 export async function getSession(id, checkRefusal = true) {
   return request(`/sessions/${id}?check_refusal=${checkRefusal}`)
@@ -118,11 +123,21 @@ export async function aiRewriteSession(id) {
 }
 
 // 执行清理
-export async function patchSession(id, replacements = null) {
+export async function patchSession(id, replacements = null, selectedLines = null, cleanReasoning = null) {
   clearCache('sessions')
   const options = { method: 'POST' }
+  const body = {}
   if (replacements && replacements.length > 0) {
-    options.body = JSON.stringify({ replacements })
+    body.replacements = replacements
+  }
+  if (selectedLines && selectedLines.length > 0) {
+    body.selected_lines = selectedLines
+  }
+  if (cleanReasoning !== null) {
+    body.clean_reasoning = cleanReasoning
+  }
+  if (Object.keys(body).length > 0) {
+    options.body = JSON.stringify(body)
   }
   return request(`/sessions/${id}/patch`, options)
 }

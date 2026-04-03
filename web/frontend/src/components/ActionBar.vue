@@ -62,6 +62,15 @@ const sessionStore = useSessionStore()
 const logStore = useLogStore()
 const settingsStore = useSettingsStore()
 
+// 接收预览面板的 ref 和 cleanReasoning
+const props = defineProps({
+  previewPanelRef: Object,
+  cleanReasoning: {
+    type: Boolean,
+    default: true
+  }
+})
+
 onMounted(() => {
   settingsStore.loadSettings()
 })
@@ -84,6 +93,13 @@ const hasThinkingOnly = computed(() => {
   return !preview?.has_changes && (preview?.thinking_count || 0) > 0
 })
 
+// 设置预览面板引用（由父组件调用）
+function setPreviewPanelRef(ref) {
+  previewPanelRefInternal.value = ref
+}
+
+const previewPanelRefInternal = ref(null)
+
 async function handlePatch() {
   if (!canPatch.value) return
 
@@ -92,6 +108,18 @@ async function handlePatch() {
   const changesCount = preview?.changes?.length || 0
   const reasoningCount = preview?.reasoning_count || 0
   const thinkingCount = preview?.thinking_count || 0
+
+  // 获取选中的行号
+  let selectedLines = null
+  const panelRef = props.previewPanelRef || previewPanelRefInternal.value
+  if (panelRef && changesCount > 1) {
+    const selected = panelRef.getSelectedLines()
+    if (selected.length > 0 && selected.length < changesCount) {
+      selectedLines = selected
+    }
+  }
+
+  const selectedInfo = selectedLines ? ` (${selectedLines.length}/${changesCount})` : ''
 
   // 根据内容类型显示不同的确认对话框
   if (!preview?.has_changes && (reasoningCount > 0 || thinkingCount > 0)) {
@@ -105,30 +133,30 @@ async function handlePatch() {
       positiveText: t('common.confirm'),
       negativeText: t('common.cancel'),
       onPositiveClick: () => {
-        executePatch()
+        executePatch(selectedLines)
       }
     })
   } else {
     // 有拒绝内容
     dialog.warning({
       title: t('action.confirmClean'),
-      content: `${t('action.confirmCleanMessage')}`,
+      content: `${t('action.confirmCleanMessage')}${selectedInfo}`,
       positiveText: t('common.confirm'),
       negativeText: t('common.cancel'),
       onPositiveClick: () => {
-        executePatch()
+        executePatch(selectedLines)
       }
     })
   }
 }
 
-async function executePatch() {
+async function executePatch(selectedLines = null) {
   patching.value = true
   lastResult.value = null
   logStore.addLog(t('action.cleaning'), 'info')
 
   try {
-    const result = await sessionStore.patchSession()
+    const result = await sessionStore.patchSession(null, selectedLines, props.cleanReasoning)
 
     if (result.success) {
       message.success(result.message)

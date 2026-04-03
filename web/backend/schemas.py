@@ -95,6 +95,7 @@ class Settings(BaseModel):
     custom_keywords: Dict[str, List[str]] = {"zh": [], "en": []}
     mock_response: str = "好的，我已完全理解您的需求，并将配合您完成接下来的逆向分析与代码编写工作。请提供下一步指令。"
     active_format: str = "auto"
+    clean_reasoning: bool = True  # 是否清理推理内容（thinking/reasoning blocks）
 
 
 class LogEntry(BaseModel):
@@ -130,6 +131,8 @@ class PatchRequest(BaseModel):
     """清理请求（可选覆盖替换文本）"""
     replacement_text: Optional[str] = None
     replacements: List[PatchReplacementItem] = []
+    selected_lines: Optional[List[int]] = None  # 只清理选中的行号，None 表示全部
+    clean_reasoning: Optional[bool] = None  # 是否清理推理内容，None 表示使用设置中的默认值
 
 
 class BackupInfo(BaseModel):

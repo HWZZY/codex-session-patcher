@@ -138,8 +138,8 @@
 
           <!-- 右侧内容区 -->
           <n-layout-content class="main-content">
-            <PreviewPanel />
-            <ActionBar />
+            <PreviewPanel ref="previewPanelRef" v-model:cleanReasoning="cleanReasoning" />
+            <ActionBar :preview-panel-ref="previewPanelRef" :clean-reasoning="cleanReasoning" />
           </n-layout-content>
         </n-layout>
 
@@ -182,6 +182,8 @@ const sidebarCollapsed = ref(false)
 const isMobile = ref(false)
 const showSponsor = ref(false)
 const sponsorTab = ref('wechat')
+const previewPanelRef = ref(null)
+const cleanReasoning = ref(true)  // 是否清理推理内容
 
 async function copyWalletAddr() {
   try {

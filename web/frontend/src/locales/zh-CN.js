@@ -38,6 +38,9 @@ export default {
   session: {
     title: '会话列表',
     search: '搜索会话...',
+    searchBtn: '搜索',
+    searchModeHint: '搜索结果：{count} 条会话',
+    clearSearch: '清除搜索',
     format_codex: 'Codex',
     format_claude: 'Claude Code',
     format_opencode: 'OpenCode',
@@ -86,6 +89,9 @@ export default {
     cleanReasoning: '清理推理',
     cleanThinking: '清理 Thinking',
     noConversation: '当前会话无对话内容',
+    selectedCount: '已选择 {selected} / {total} 条',
+    selectAll: '全选',
+    deselectAll: '取消全选',
   },
 
   // 操作栏
@@ -199,6 +205,8 @@ export default {
     opencodeEnabledHint: '开启后在会话列表和提示词增强中显示 OpenCode 相关功能',
     showAllSessions: '显示全部会话（含无拒绝）',
     showAllSessionsHint: '关闭时仅显示有拒绝和已清理的会话，减少列表干扰',
+    cleanReasoning: '清理推理内容',
+    cleanReasoningHint: '清理会话时同时删除 thinking/reasoning 推理内容，关闭则只替换拒绝回复',
     resetSuccess: '已重置为默认值',
   },
 

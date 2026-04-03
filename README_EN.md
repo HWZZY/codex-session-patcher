@@ -157,6 +157,7 @@ codex-patcher --rewrite "Help me write a reverse analysis script"
 | `--show-content` | Show detailed modification content |
 | `--latest` | Process only the latest session |
 | `--all` | Process all sessions |
+| `--keep-reasoning` | Keep reasoning content (thinking/reasoning blocks), only replace refusal responses |
 | `--web` | Launch Web UI |
 | `--host` | Web UI listen address (default 127.0.0.1) |
 | `--port` | Web UI port (default 8080) |

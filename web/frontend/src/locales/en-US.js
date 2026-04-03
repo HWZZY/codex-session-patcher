@@ -38,6 +38,9 @@ export default {
   session: {
     title: 'Session List',
     search: 'Search sessions...',
+    searchBtn: 'Search',
+    searchModeHint: '{count} sessions found',
+    clearSearch: 'Clear search',
     format_codex: 'Codex',
     format_claude: 'Claude Code',
     format_opencode: 'OpenCode',
@@ -86,6 +89,9 @@ export default {
     cleanReasoning: 'Clean Reasoning',
     cleanThinking: 'Clean Thinking',
     noConversation: 'No conversation content',
+    selectedCount: 'Selected {selected} / {total}',
+    selectAll: 'Select All',
+    deselectAll: 'Deselect All',
   },
 
   // Action Bar
@@ -199,6 +205,8 @@ export default {
     opencodeEnabledHint: 'Show OpenCode features in session list and prompt enhance panel',
     showAllSessions: 'Show all sessions (including no refusal)',
     showAllSessionsHint: 'When disabled, only show sessions with refusal or cleaned',
+    cleanReasoning: 'Clean Reasoning Content',
+    cleanReasoningHint: 'Delete thinking/reasoning blocks when cleaning sessions. Disable to only replace refusal responses.',
     resetSuccess: 'Reset to defaults',
   },
 

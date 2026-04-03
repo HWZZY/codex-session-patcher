@@ -460,8 +460,15 @@ def patch_session(file_path: str, mock_response: str = MOCK_RESPONSE,
                  custom_keywords: dict = None, create_backup: bool = True,
                  replacements: dict = None,
                  session_format: SessionFormat = SessionFormat.CODEX,
-                 session_id: str = None) -> PatchResponse:
-    """执行会话清理"""
+                 session_id: str = None,
+                 selected_lines: list = None,
+                 clean_reasoning: bool = True) -> PatchResponse:
+    """执行会话清理
+
+    Args:
+        selected_lines: 只清理选中的行号列表，None 表示全部清理
+        clean_reasoning: 是否清理推理内容（thinking/reasoning blocks）
+    """
     if replacements is None:
         replacements = {}
 
@@ -482,6 +489,8 @@ def patch_session(file_path: str, mock_response: str = MOCK_RESPONSE,
                 lines, detector, show_content=True,
                 mock_response=mock_response,
                 session_format=session_format,
+                selected_lines=selected_lines,
+                clean_reasoning=clean_reasoning,
             )
 
             if replacements:
@@ -507,6 +516,8 @@ def patch_session(file_path: str, mock_response: str = MOCK_RESPONSE,
                 lines, detector, show_content=True,
                 mock_response=mock_response,
                 session_format=session_format,
+                selected_lines=selected_lines,
+                clean_reasoning=clean_reasoning,
             )
 
             if replacements:
@@ -648,6 +659,89 @@ async def get_sessions(skip_check: bool = False, limit: int = 0, format: str = "
     )
 
 
+# ─── 搜索缓存 ────────────────────────────────────────────────────────────────
+
+_search_cache: dict = {
+    'query': None,
+    'format': None,
+    'sessions': None,
+    'timestamp': 0.0,
+    'ttl': 10,  # 10 秒 TTL（搜索结果缓存较短）
+}
+
+
+@router.get("/sessions/search", response_model=SessionListResponse)
+async def search_sessions(query: str, format: str = "auto"):
+    """根据关键词搜索会话内容"""
+    if not query or not query.strip():
+        return SessionListResponse(sessions=[], total=0, format=format)
+
+    query = query.strip().lower()
+    session_format = _resolve_format(format)
+
+    # 检查搜索缓存
+    now = _time.time()
+    if (_search_cache['query'] == query and
+        _search_cache['format'] == format and
+        _search_cache['sessions'] is not None and
+        (now - _search_cache['timestamp']) < _search_cache['ttl']):
+        # 缓存命中
+        cached_sessions = _search_cache['sessions']
+        if session_format is None:
+            return SessionListResponse(sessions=cached_sessions, total=len(cached_sessions), format=format)
+        fmt_str = _to_schema_format(session_format)
+        filtered = [s for s in cached_sessions if s.format == fmt_str]
+        return SessionListResponse(sessions=filtered, total=len(filtered), format=format)
+
+    # 使用缓存获取会话列表（避免重新扫描）
+    all_sessions = _get_cached_sessions(session_format=session_format, skip_refusal_check=True)
+    matched_sessions = []
+
+    for session in all_sessions:
+        try:
+            core_fmt = _session_core_format(session)
+            if core_fmt == SessionFormat.OPENCODE:
+                # OpenCode: 从 SQLite 加载
+                adapter = OpenCodeDBAdapter(session.path)
+                messages = adapter.load_session_messages(session.id)
+                content_lines = []
+                strategy = get_format_strategy(core_fmt)
+                for msg in messages:
+                    text = strategy.extract_text_content(msg)
+                    if text:
+                        content_lines.append(text)
+                content = '\n'.join(content_lines)
+            else:
+                # JSONL 格式
+                with open(session.path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+
+            if query in content.lower():
+                # 需要重新检测拒绝状态
+                if not session.has_refusal:
+                    has_refusal, refusal_count = check_session_refusal(session.path, core_fmt)
+                    session = session.model_copy(update={
+                        'has_refusal': has_refusal,
+                        'refusal_count': refusal_count
+                    })
+                matched_sessions.append(session)
+        except Exception:
+            logger.warning("搜索会话 %s 失败", session.id, exc_info=True)
+            continue
+
+    # 更新搜索缓存
+    _search_cache['query'] = query
+    _search_cache['format'] = format
+    _search_cache['sessions'] = matched_sessions
+    _search_cache['timestamp'] = now
+
+    return SessionListResponse(
+        sessions=matched_sessions,
+        total=len(matched_sessions),
+        format=format,
+    )
+
+
 def _find_session(session_id: str, session_format: Optional[SessionFormat] = None) -> Optional[Session]:
     """查找会话（优先从缓存获取）"""
     sessions = _get_cached_sessions(session_format=session_format, skip_refusal_check=True)
@@ -754,6 +848,12 @@ async def patch_session_api(session_id: str, body: PatchRequest = None):
     elif body and body.replacement_text:
         mock_response = body.replacement_text
 
+    # 获取选中的行号
+    selected_lines = body.selected_lines if body else None
+
+    # 获取是否清理推理内容的设置（请求优先，其次使用全局设置）
+    clean_reasoning = body.clean_reasoning if body and body.clean_reasoning is not None else settings.clean_reasoning
+
     await manager.broadcast(WSMessage(
         type="log",
         data={"level": "info", "message": f"开始处理会话: {session_id}"}
@@ -767,6 +867,8 @@ async def patch_session_api(session_id: str, body: PatchRequest = None):
         replacements=replacements_map,
         session_format=core_fmt,
         session_id=session_id if core_fmt == SessionFormat.OPENCODE else None,
+        selected_lines=selected_lines,
+        clean_reasoning=clean_reasoning,
     )
 
     if result.success:

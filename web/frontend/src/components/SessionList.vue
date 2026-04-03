@@ -48,11 +48,24 @@
         :placeholder="$t('session.search')"
         clearable
         size="small"
+        @keyup.enter="handleSearch"
+        @clear="handleClearSearch"
       >
         <template #prefix>
           <n-icon><SearchOutline /></n-icon>
         </template>
       </n-input>
+      <n-button size="small" type="primary" @click="handleSearch" :loading="loading" style="margin-left: 8px">
+        {{ $t('session.searchBtn') }}
+      </n-button>
+    </div>
+
+    <!-- 搜索模式提示 -->
+    <div v-if="sessionStore.isSearchMode" class="search-mode-hint">
+      <n-text depth="3" style="font-size: 12px">{{ $t('session.searchModeHint', { count: visibleSessions.length }) }}</n-text>
+      <n-button text size="tiny" type="primary" @click="handleClearSearch" style="font-size: 12px; margin-left: 8px">
+        {{ $t('session.clearSearch') }}
+      </n-button>
     </div>
 
     <!-- 过滤标签 -->
@@ -180,7 +193,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch } from 'vue'
+import { ref, reactive, computed, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useMessage } from 'naive-ui'
 import { RefreshOutline, ChevronDownOutline, SearchOutline } from '@vicons/ionicons5'
@@ -205,6 +218,46 @@ const expandedGroups = reactive(new Set([t('session.today'), t('session.yesterda
 const searchQuery = ref('')
 const filterMode = ref('refusal')  // 'all' | 'refusal' | 'clean' | 'patched'
 const loading = ref(false)
+
+// 防抖定时器
+let searchDebounceTimer = null
+
+// 搜索处理（带防抖）
+async function handleSearch() {
+  if (!searchQuery.value || !searchQuery.value.trim()) {
+    return
+  }
+  // 清除之前的定时器
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+  }
+  // 300ms 防抖
+  searchDebounceTimer = setTimeout(async () => {
+    loading.value = true
+    try {
+      await sessionStore.searchSessions(searchQuery.value.trim())
+    } finally {
+      loading.value = false
+    }
+  }, 300)
+}
+
+// 清除搜索
+async function handleClearSearch() {
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+    searchDebounceTimer = null
+  }
+  searchQuery.value = ''
+  await sessionStore.clearSearch()
+}
+
+// 组件销毁时清理定时器
+onUnmounted(() => {
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+  }
+})
 
 // 关闭"显示全部"时，如果当前在 all/clean 过滤，自动切回 refusal
 watch(() => settingsStore.showAllSessions, (val) => {
@@ -245,6 +298,10 @@ const patchedCount = computed(() => {
 
 // 过滤后的会话列表
 const filteredSessions = computed(() => {
+  // 搜索模式下，服务端已过滤，直接返回
+  if (sessionStore.isSearchMode) {
+    return visibleSessions.value
+  }
   let list = visibleSessions.value
   // 按拒绝状态过滤
   if (filterMode.value === 'refusal') {
@@ -253,14 +310,6 @@ const filteredSessions = computed(() => {
     list = list.filter(s => !s.has_refusal)
   } else if (filterMode.value === 'patched') {
     list = list.filter(s => s.has_backup)
-  }
-  // 搜索过滤
-  if (searchQuery.value) {
-    const query = searchQuery.value.toLowerCase()
-    list = list.filter(s =>
-      s.id.toLowerCase().includes(query) ||
-      s.filename.toLowerCase().includes(query)
-    )
   }
   return list
 })
@@ -459,6 +508,18 @@ function formatTime(mtime) {
   flex-shrink: 0;
   padding: 8px 12px;
   border-bottom: 1px solid var(--color-border, #3a3a3a);
+  display: flex;
+  align-items: center;
+}
+
+.search-mode-hint {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  background: rgba(32, 128, 240, 0.1);
+  border-bottom: 1px solid var(--color-border, #3a3a3a);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .filter-tabs {

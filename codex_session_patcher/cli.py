@@ -290,6 +290,7 @@ def main():
     parser.add_argument('--show-content', action='store_true', help='显示修改的详细内容')
     parser.add_argument('--latest', action='store_true', help='只处理最新的会话文件')
     parser.add_argument('--all', action='store_true', help='扫描并处理所有会话文件')
+    parser.add_argument('--keep-reasoning', action='store_true', help='保留推理内容（thinking/reasoning blocks），仅替换拒绝回复')
 
     # Web UI 参数
     parser.add_argument('--web', action='store_true', help='启动 Web UI')
@@ -360,6 +361,7 @@ def main():
     config = load_config()
     mock_response = config.get('mock_response', MOCK_RESPONSE)
     custom_keywords = config.get('custom_keywords', None)
+    clean_reasoning = not args.keep_reasoning  # 默认清理推理内容，--keep-reasoning 时保留
 
     # 解析会话格式
     session_format = resolve_session_format(args)
@@ -409,6 +411,7 @@ def main():
             lines, detector, show_content=args.show_content,
             mock_response=mock_response,
             session_format=session.format,
+            clean_reasoning=clean_reasoning,
         )
 
         if not modified:
@@ -495,6 +498,7 @@ def _cli_process_opencode(args, mock_response: str, custom_keywords):
             lines, detector, show_content=args.show_content,
             mock_response=mock_response,
             session_format=SessionFormat.OPENCODE,
+            clean_reasoning=clean_reasoning,
         )
 
         if not modified:
